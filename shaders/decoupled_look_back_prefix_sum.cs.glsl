@@ -7,16 +7,17 @@
 #define ACQUIRE gl_StorageSemanticsBuffer, gl_SemanticsAcquire
 #define RELEASE gl_StorageSemanticsBuffer, gl_SemanticsRelease
 
-#define GROUP_SIZE 64
+#define GROUP_SIZE 512
 #define SUBGROUP_SIZE 32
 
-const uint SUBGROUP_COUNT = GROUP_SIZE / SUBGROUP_SIZE;
+#define SUBGROUP_COUNT 16
 
 layout(local_size_x = GROUP_SIZE, local_size_y = 1) in;
 
-#define STATE_X 0
-#define STATE_A 1
-#define STATE_P 2
+#define STATE_X 0u
+#define STATE_A 1u
+#define STATE_P 2u
+
 struct PartitionDescriptor {
     float aggregate;
     float prefix;
@@ -39,7 +40,6 @@ layout(set = 0, binding = 3) buffer atomic_workID {
     uint atomicWorkIDCounter;
 };
 
-shared float groupCache[GROUP_SIZE];
 shared uint groupID;
 
 shared float subgroupAggregates[SUBGROUP_COUNT];
@@ -47,64 +47,65 @@ shared float groupPrefix;
 shared uint lookBackState;
 
 void main() {
-    uint invocID = gl_LocalInvocationID.x;
-    uint subInvocID = gl_SubgroupInvocationID.x;
-    uint subgroupID = gl_SubgroupID.x;
+    const uint invocID = gl_LocalInvocationID.x;
+    const uint subInvocID = gl_SubgroupInvocationID.x;
+    const uint subgroupID = gl_SubgroupID.x;
     if (invocID == 0) {
         groupID = atomicAdd(atomicWorkIDCounter, 1);
     }
     barrier();
-    uint itemID = groupID * GROUP_SIZE + invocID;
+    uint partID = groupID;
+    uint itemID = partID * GROUP_SIZE + invocID;
+
 
     // 1. Step calculate group aggregate
     // - 1.1 Calculate subgroup aggregates
-    groupCache[invocID] = values[itemID];
+    float item = values[itemID];
+    //groupCache[invocID] = values[itemID];
+
+    subgroupAggregates[subgroupID] = 32;
     barrier();
 
-    subgroupAggregates[subgroupID] = subgroupAdd(groupCache[invocID]);
-    barrier();
     // - 1.2 Combine subgroup aggregates.
     float aggregate = 0.0f;
-    if (invocID == gl_WorkGroupSize.x - 1) {
-      for (uint i = 0; i < gl_NumSubgroups.x; ++i) {
-          aggregate += subgroupAggregates[i];
-      }
+    if (subgroupID == gl_NumSubgroups.x - 1) {
+        float subgroupAgg = (subInvocID < gl_NumSubgroups.x) ? subgroupAggregates[subInvocID] : 0;
+        aggregate = subgroupAdd(subgroupAgg);
     }
+    barrier();
 
     // 2. Publish aggregate and state
     // 2.1 Write aggregate
     if (invocID == gl_WorkGroupSize.x - 1) {
-        if (groupID == 0) {
-            partitions[groupID].prefix = aggregate;
-        } else {
-            partitions[groupID].aggregate = aggregate;
-        }
+        partitions[partID].aggregate = aggregate;
+        if (partID == 0) {
+            partitions[0].prefix = aggregate;
+        } 
     }
-    memoryBarrierBuffer();
-    if (invocID == gl_WorkGroupSize.x - 1) {
-        uint state = groupID == 0 ? STATE_P : STATE_A;
-        atomicStore(partitions[groupID].state, state, gl_ScopeDevice, RELEASE);
+    //memoryBarrierBuffer();
+    if (invocID == GROUP_SIZE - 1) {
+        uint state = (partID == 0) ? STATE_P : STATE_A;
+        atomicStore(partitions[partID].state, state, gl_ScopeDevice, RELEASE);
     }
 
     float exclusive = 0.0f;
     if (groupID != 0) {
-        uint lookBackIndex = groupID - 1;
+        uint lookBackIndex = partID - 1;
         while (true) {
-            if (invocID == gl_WorkGroupSize.x - 1) {
+            if (invocID == GROUP_SIZE - 1) {
                 lookBackState = atomicLoad(partitions[lookBackIndex].state, gl_ScopeDevice, ACQUIRE);
             }
             barrier();
-            memoryBarrierBuffer();
+            //memoryBarrierBuffer();
             uint state = lookBackState;
-            barrier();
             if (state == STATE_P) {
-                if (invocID == gl_WorkGroupSize.x - 1) {
+                if (invocID == GROUP_SIZE - 1) {
                     float prefix = partitions[lookBackIndex].prefix;
                     exclusive = exclusive + prefix;
                 }
                 break;
             } else if (state == STATE_A) {
-                if (invocID == gl_WorkGroupSize.x - 1) {
+                if (invocID == GROUP_SIZE - 1) {
                     float agg = partitions[lookBackIndex].aggregate;
                     exclusive = exclusive + agg;
                 }
@@ -114,22 +115,29 @@ void main() {
             // else spin!
         }
 
-        if (invocID == gl_WorkGroupSize.x - 1) {
+        if (invocID == GROUP_SIZE - 1) {
+            float inclusivePrefix = exclusive + aggregate;
             groupPrefix = exclusive;
-            partitions[groupID].prefix = groupPrefix + aggregate;
+            partitions[partID].prefix = inclusivePrefix;
         }
-        memoryBarrierBuffer();
+        //memoryBarrierBuffer();
 
-        if (invocID == gl_WorkGroupSize.x - 1) {
-            atomicStore(partitions[groupID].state, uint(STATE_P), gl_ScopeDevice, RELEASE);
+        if (invocID == GROUP_SIZE - 1) {
+            atomicStore(partitions[partID].state, STATE_P, gl_ScopeDevice, RELEASE);
         }
     }
-    float inclusivePrefix = subgroupInclusiveAdd(groupCache[invocID]);
-    // float inclusivePrefix = 0;
 
-    barrier();
-    groupCache[invocID] = inclusivePrefix + groupPrefix;
+    float inclusivePrefix = subgroupInclusiveAdd(item);
+    if (subgroupID == gl_NumSubgroups.x - 1) {
+        float subgroupAgg = (subInvocID < gl_NumSubgroups.x) ? subgroupAggregates[subInvocID] : 0;
+        //subgroupMemoryBarrierShared();
+        float exclusiveSubgroupPrefix = subgroupExclusiveAdd(subgroupAgg);
+        if (subInvocID < gl_NumSubgroups.x) {
+            subgroupAggregates[subInvocID] = exclusiveSubgroupPrefix;
+        }
+    }
+    item = subgroupAggregates[subgroupID] + inclusivePrefix + groupPrefix;
 
     // write back
-    prefix_sum[itemID] = groupCache[invocID];
+    prefix_sum[itemID] = item;
 }

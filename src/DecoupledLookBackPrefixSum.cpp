@@ -6,7 +6,7 @@
 #include <memory_resource>
 #include <vulkan/vulkan_enums.hpp>
 
-constexpr size_t WORK_GROUP_SIZE = 64;
+constexpr size_t WORK_GROUP_SIZE = 512;
 
 DecoupledLookBackPrefixSum::DecoupledLookBackPrefixSum(bool validationLayer)
     : m_runtime(gpu::RuntimeCreateInfo{

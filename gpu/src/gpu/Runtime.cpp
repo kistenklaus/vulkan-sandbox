@@ -147,6 +147,7 @@ Runtime::Runtime(const RuntimeCreateInfo &createInfo) {
 
   // Select physical device.
   physicalDevice = selectPhysicalDevice(instance, &bufferResource);
+
   auto [gfxFamilyIndex, computeFamilyIndex] =
       selectQueueFamilies(physicalDevice, &bufferResource);
 

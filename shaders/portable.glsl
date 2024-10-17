@@ -87,6 +87,7 @@ void main() {
     }
     Monoid agg = local[N_ROWS - 1];
     sh_scratch[gl_LocalInvocationID.x] = agg;
+
     for (uint i = 0; i < LG_WG_SIZE; i++) {
         barrier();
         if (gl_LocalInvocationID.x >= (1u << i)) {
@@ -104,6 +105,7 @@ void main() {
             state[0].prefix = agg;
         }
     }
+
     // Write flag with release semantics; this is done portably with a barrier.
 #ifndef VKMM
     memoryBarrierBuffer();
@@ -208,6 +210,7 @@ void main() {
 #endif
         }
     }
+
     barrier();
     if (part_ix != 0) {
         exclusive = sh_prefix;

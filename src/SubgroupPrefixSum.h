@@ -9,8 +9,8 @@ public:
 
   inline gpu::time::Clock::duration duration() const { return m_duration; }
 
+  static constexpr size_t WEIGHT_COUNT = 512 * 16 * 1e4;
 private:
-  static constexpr size_t WEIGHT_COUNT = 64;
   gpu::Runtime m_runtime;
   gpu::time::Clock::duration m_duration;
   gpu::pmr::CommandPool m_commandPool;
