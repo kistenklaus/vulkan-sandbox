@@ -1,9 +1,9 @@
 #include "./Runtime.h"
 #include "ext/debug_utils.h"
-#include <logging.h>
 #include "memory/DeviceMemoryResource.h"
 #include <algorithm>
 #include <iostream>
+#include <logging.h>
 #include <memory_resource>
 #include <ranges>
 #include <stdexcept>
@@ -12,6 +12,7 @@
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_core.h>
 #include <vulkan/vulkan_enums.hpp>
+#include <vulkan/vulkan_structs.hpp>
 
 vk::PhysicalDevice
 selectPhysicalDevice(vk::Instance instance,
@@ -27,14 +28,16 @@ selectPhysicalDevice(vk::Instance instance,
       });
 }
 
-static uint32_t selectQueueFamilies(vk::PhysicalDevice physicalDevice,
-                                    std::pmr::memory_resource *bufferResource) {
+static std::tuple<uint32_t, uint32_t>
+selectQueueFamilies(vk::PhysicalDevice physicalDevice,
+                    std::pmr::memory_resource *bufferResource) {
   using Alloc = std::pmr::polymorphic_allocator<vk::QueueFamilyProperties>;
   Alloc alloc(bufferResource);
 
   std::pmr::vector<vk::QueueFamilyProperties> queueFamilyProperties =
       physicalDevice.getQueueFamilyProperties(alloc, {});
   uint32_t graphicsQueueFamilyIndex = -1;
+  uint32_t computeQueueFamilyIndex = -1;
 
   for (auto [i, familyProperty] :
        queueFamilyProperties | std::views::enumerate) {
@@ -42,11 +45,15 @@ static uint32_t selectQueueFamilies(vk::PhysicalDevice physicalDevice,
                           vk::QueueFlagBits::eGraphics)) {
       graphicsQueueFamilyIndex = i;
     }
-    if (graphicsQueueFamilyIndex != -1) {
+    if (static_cast<bool>(familyProperty.queueFlags &
+                          vk::QueueFlagBits::eCompute)) {
+      computeQueueFamilyIndex = i;
+    }
+    if (graphicsQueueFamilyIndex != -1 && computeQueueFamilyIndex) {
       break;
     }
   }
-  return graphicsQueueFamilyIndex;
+  return {graphicsQueueFamilyIndex, computeQueueFamilyIndex};
 }
 
 static VkBool32 VKAPI_CALL debugCallback(
@@ -140,25 +147,58 @@ Runtime::Runtime(const RuntimeCreateInfo &createInfo) {
 
   // Select physical device.
   physicalDevice = selectPhysicalDevice(instance, &bufferResource);
-  auto gfxFamilyIndex = selectQueueFamilies(physicalDevice, &bufferResource);
-  graphicsQueueFamilyIndex = gfxFamilyIndex;
+  auto [gfxFamilyIndex, computeFamilyIndex] =
+      selectQueueFamilies(physicalDevice, &bufferResource);
 
   vk::DeviceCreateInfo deviceCreateInfo;
   std::pmr::vector<vk::DeviceQueueCreateInfo> queueCreateInfos{&bufferResource};
   vk::DeviceQueueCreateInfo graphicsQueueCreateInfo;
   float priority = 1.0f;
   graphicsQueueCreateInfo.setQueuePriorities(priority);
-  graphicsQueueCreateInfo.setQueueFamilyIndex(graphicsQueueFamilyIndex);
+  graphicsQueueCreateInfo.setQueueFamilyIndex(gfxFamilyIndex);
   queueCreateInfos.push_back(graphicsQueueCreateInfo);
-
+  if (gfxFamilyIndex != computeFamilyIndex) {
+    vk::DeviceQueueCreateInfo computeQueueCreateInfo;
+    float priority = 1.0f;
+    computeQueueCreateInfo.setQueuePriorities(priority);
+    computeQueueCreateInfo.setQueueFamilyIndex(computeFamilyIndex);
+    queueCreateInfos.push_back(computeQueueCreateInfo);
+  }
   deviceCreateInfo.setQueueCreateInfos(queueCreateInfos);
+
+  vk::PhysicalDeviceFeatures2 features2Available;
+  vk::PhysicalDeviceVulkan12Features v12FeaturesAvailable;
+  features2Available.setPNext(&v12FeaturesAvailable);
+  physicalDevice.getFeatures2(&features2Available);
+  std::cout << "VulkanMemoryModel: ";
+  std::cout << v12FeaturesAvailable.vulkanMemoryModel << std::endl;
+
+  assert(v12FeaturesAvailable.vulkanMemoryModel);
+  assert(v12FeaturesAvailable.vulkanMemoryModelDeviceScope);
+  vk::PhysicalDeviceFeatures2 features2;
+  vk::PhysicalDeviceVulkan12Features v12Features;
+  features2.setPNext(&v12Features);
+  v12Features.setVulkanMemoryModelDeviceScope(VK_TRUE);
+  v12Features.setVulkanMemoryModel(VK_TRUE);
+
+  deviceCreateInfo.setPNext(&features2);
+
+
   vk::Result rCreateDevice =
       physicalDevice.createDevice(&deviceCreateInfo, nullptr, &device);
   if (rCreateDevice != vk::Result::eSuccess) {
     throw std::runtime_error("Failed to create device");
   }
 
-  graphicsQueue = device.getQueue(graphicsQueueFamilyIndex, 0);
+  graphicsQueue = Queue(device, gfxFamilyIndex, 0);
+  if (gfxFamilyIndex == computeFamilyIndex) {
+    computeQueue = graphicsQueue;
+  } else {
+    if (createInfo.validationLayer) {
+      lout::info() << "GraphicsQueue != ComputeQueue" << lout::endl();
+    }
+    computeQueue = Queue(device, computeFamilyIndex, 0);
+  }
 
   vk::PhysicalDeviceMemoryProperties memoryProperties =
       physicalDevice.getMemoryProperties();
@@ -182,65 +222,73 @@ Runtime::Runtime(const RuntimeCreateInfo &createInfo) {
     }
   }
   if (deviceLocalMemoryTypeIndex == -1) {
-    throw std::runtime_error("Failed to find memoryType with device local properties");
+    throw std::runtime_error(
+        "Failed to find memoryType with device local properties");
   }
   if (hostVisibleMemoryTypeIndex == -1) {
-    throw std::runtime_error("Failed to find memoryType with host visible properties");
+    throw std::runtime_error(
+        "Failed to find memoryType with host visible properties");
   }
-  m_deviceLocalMemory = gpu::memory::DeviceMemoryResource(device, deviceLocalMemoryTypeIndex);
-  m_hostVisibleMemory = gpu::memory::DeviceMemoryResource(device, hostVisibleMemoryTypeIndex);
+  m_deviceLocalMemory =
+      gpu::memory::DeviceMemoryResource(device, deviceLocalMemoryTypeIndex);
+  m_hostVisibleMemory =
+      gpu::memory::DeviceMemoryResource(device, hostVisibleMemoryTypeIndex);
 
-  lout::info() << "Memory Types:" << lout::endl();
-  for (size_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
-    const vk::MemoryType &memoryType = memoryProperties.memoryTypes[i];
-    lout::info() << "-" << i << "={";
-    if (memoryType.propertyFlags & vk::MemoryPropertyFlagBits::eProtected) {
-      lout::info() << "PROTECTED," << lout::end();
+  if (createInfo.validationLayer) {
+    lout::info() << "Memory Types:" << lout::endl();
+    for (size_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
+      const vk::MemoryType &memoryType = memoryProperties.memoryTypes[i];
+      lout::info() << "-" << i << "={";
+      if (memoryType.propertyFlags & vk::MemoryPropertyFlagBits::eProtected) {
+        lout::info() << "PROTECTED," << lout::end();
+      }
+      if (memoryType.propertyFlags & vk::MemoryPropertyFlagBits::eHostCached) {
+        lout::info() << "HOST_CACHED," << lout::end();
+      }
+      if (memoryType.propertyFlags & vk::MemoryPropertyFlagBits::eHostVisible) {
+        lout::info() << "HOST_VISIBLE," << lout::end();
+      }
+      if (memoryType.propertyFlags & vk::MemoryPropertyFlagBits::eDeviceLocal) {
+        lout::info() << "DEVICE_LOCAL," << lout::end();
+      }
+      if (memoryType.propertyFlags &
+          vk::MemoryPropertyFlagBits::eHostCoherent) {
+        lout::info() << "HOST_COHERENT," << lout::end();
+      }
+      if (memoryType.propertyFlags &
+          vk::MemoryPropertyFlagBits::eRdmaCapableNV) {
+        lout::info() << "RDMA_CAPABLE_NV," << lout::end();
+      }
+      if (memoryType.propertyFlags &
+          vk::MemoryPropertyFlagBits::eLazilyAllocated) {
+        lout::info() << "LAZILY_ALLOCATED," << lout::end();
+      }
+      if (memoryType.propertyFlags &
+          vk::MemoryPropertyFlagBits::eDeviceUncachedAMD) {
+        lout::info() << "DEVICE_UNCACHED_AMD," << lout::end();
+      }
+      if (memoryType.propertyFlags &
+          vk::MemoryPropertyFlagBits::eDeviceCoherentAMD) {
+        lout::info() << "DEVICE_COHERENT_AMD," << lout::end();
+      }
+      lout::info() << "} -> " << memoryType.heapIndex << lout::endl();
     }
-    if (memoryType.propertyFlags & vk::MemoryPropertyFlagBits::eHostCached) {
-      lout::info() << "HOST_CACHED," << lout::end();
-    }
-    if (memoryType.propertyFlags & vk::MemoryPropertyFlagBits::eHostVisible) {
-      lout::info() << "HOST_VISIBLE," << lout::end();
-    }
-    if (memoryType.propertyFlags & vk::MemoryPropertyFlagBits::eDeviceLocal) {
-      lout::info() << "DEVICE_LOCAL," << lout::end();
-    }
-    if (memoryType.propertyFlags & vk::MemoryPropertyFlagBits::eHostCoherent) {
-      lout::info() << "HOST_COHERENT," << lout::end();
-    }
-    if (memoryType.propertyFlags & vk::MemoryPropertyFlagBits::eRdmaCapableNV) {
-      lout::info() << "RDMA_CAPABLE_NV," << lout::end();
-    }
-    if (memoryType.propertyFlags &
-        vk::MemoryPropertyFlagBits::eLazilyAllocated) {
-      lout::info() << "LAZILY_ALLOCATED," << lout::end();
-    }
-    if (memoryType.propertyFlags &
-        vk::MemoryPropertyFlagBits::eDeviceUncachedAMD) {
-      lout::info() << "DEVICE_UNCACHED_AMD," << lout::end();
-    }
-    if (memoryType.propertyFlags &
-        vk::MemoryPropertyFlagBits::eDeviceCoherentAMD) {
-      lout::info() << "DEVICE_COHERENT_AMD," << lout::end();
-    }
-    lout::info() << "} -> " << memoryType.heapIndex << lout::endl();
-  }
 
-  lout::info() << "Memory Heaps:" << lout::endl();
-  for (size_t i = 0; i < memoryProperties.memoryHeapCount; ++i) {
-    vk::MemoryHeap &heap = memoryProperties.memoryHeaps[i];
-    lout::info() << "-" << i << "={size=" << heap.size << "," << lout::end();
-    if (heap.flags & vk::MemoryHeapFlagBits::eDeviceLocal) {
-      lout::info() << "DEVICE_LOCAL," << lout::end();
+    lout::info() << "Memory Heaps:" << lout::endl();
+    for (size_t i = 0; i < memoryProperties.memoryHeapCount; ++i) {
+      vk::MemoryHeap &heap = memoryProperties.memoryHeaps[i];
+      lout::info() << "-" << i << "={size=" << heap.size << "," << lout::end();
+      if (heap.flags & vk::MemoryHeapFlagBits::eDeviceLocal) {
+        lout::info() << "DEVICE_LOCAL," << lout::end();
+      }
+      if (heap.flags & vk::MemoryHeapFlagBits::eMultiInstance) {
+        lout::info() << "MULTI_INSTANCE," << lout::end();
+      }
+      if (heap.flags & vk::MemoryHeapFlagBits::eMultiInstanceKHR) {
+        lout::info() << "MULTI_INSTANCE_KHR," << lout::end();
+      }
+      lout::info() << "}" << lout::endl();
     }
-    if (heap.flags & vk::MemoryHeapFlagBits::eMultiInstance) {
-      lout::info() << "MULTI_INSTANCE," << lout::end();
-    }
-    if (heap.flags & vk::MemoryHeapFlagBits::eMultiInstanceKHR) {
-      lout::info() << "MULTI_INSTANCE_KHR," << lout::end();
-    }
-    lout::info() << "}" << lout::endl();
   }
 }
 Runtime::~Runtime() {
@@ -254,16 +302,15 @@ Runtime::~Runtime() {
   debugUtilsMessenger = VK_NULL_HANDLE;
 }
 Runtime::Runtime(Runtime &&o) noexcept
-    : instance(o.instance), physicalDevice(o.physicalDevice), device(o.device),
-      graphicsQueueFamilyIndex(o.graphicsQueueFamilyIndex),
-      graphicsQueue(o.graphicsQueue), m_deviceLocalMemory(o.m_deviceLocalMemory),
-      m_hostVisibleMemory(o.m_hostVisibleMemory),
-      debugUtilsMessenger(o.debugUtilsMessenger) {
+    : instance(std::move(o.instance)),
+      physicalDevice(std::move(o.physicalDevice)), device(std::move(o.device)),
+      graphicsQueue(std::move(o.graphicsQueue)),
+      m_deviceLocalMemory(std::move(o.m_deviceLocalMemory)),
+      m_hostVisibleMemory(std::move(o.m_hostVisibleMemory)),
+      debugUtilsMessenger(std::move(o.debugUtilsMessenger)) {
   o.instance = VK_NULL_HANDLE;
   o.physicalDevice = VK_NULL_HANDLE;
   o.device = VK_NULL_HANDLE;
-  o.graphicsQueueFamilyIndex = -1;
-  o.graphicsQueue = VK_NULL_HANDLE;
   o.m_deviceLocalMemory = std::nullopt;
   o.m_hostVisibleMemory = std::nullopt;
 }
@@ -275,7 +322,6 @@ Runtime &Runtime::operator=(Runtime &&o) noexcept {
   std::swap(instance, o.instance);
   std::swap(physicalDevice, o.physicalDevice);
   std::swap(device, o.device);
-  std::swap(graphicsQueueFamilyIndex, o.graphicsQueueFamilyIndex);
   std::swap(graphicsQueue, o.graphicsQueue);
   std::swap(m_deviceLocalMemory, o.m_deviceLocalMemory);
   std::swap(m_hostVisibleMemory, o.m_hostVisibleMemory);

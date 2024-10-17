@@ -37,6 +37,10 @@ public:
     return m_upstream->memoryTypeIndex();
   }
 
+  void reset() {
+    m_topOfStack = 0;
+  }
+
 private:
   size_t m_capacity;
   size_t m_topOfStack;

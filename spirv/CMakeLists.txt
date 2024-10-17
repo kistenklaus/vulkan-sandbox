@@ -27,6 +27,7 @@ target_compile_definitions(${SPIRV_LIB_NAME} PUBLIC
 target_link_libraries(${SPIRV_LIB_NAME} 
   PRIVATE 
     shaderc_shared
+    wrs-logging
 )
 set_target_properties(${SPIRV_LIB_NAME}
   PROPERTIES CXX_STANDARD_REQUIRED ON

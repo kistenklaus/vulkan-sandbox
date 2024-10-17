@@ -22,7 +22,7 @@ private:
   using allocator_traits = std::allocator_traits<Allocator>;
 
 public:
-  CommandPool(const gpu::Runtime &runtime,
+  CommandPool(const gpu::Runtime &runtime, const Queue *queue,
               vk::CommandPoolCreateFlags flags = {},
               const Allocator &allocator = {})
       : m_allocator(allocator) {
@@ -31,7 +31,7 @@ public:
     vk::Device device = runtime.device;
 
     vk::CommandPoolCreateInfo createInfo;
-    createInfo.setQueueFamilyIndex(runtime.graphicsQueueFamilyIndex);
+    createInfo.setQueueFamilyIndex(queue->familyIndex());
     createInfo.setFlags(flags);
     vk::Result rCreateCommandPool =
         device.createCommandPool(&createInfo, nullptr, &m_ownedHandles->pool);
@@ -86,13 +86,18 @@ public:
     return CommandBuffer(cmd, m_ownedHandles);
   }
 
+  void reset() {
+    m_ownedHandles->device.resetCommandPool(m_ownedHandles->pool);
+  }
+
 private:
   cmd::CommandPoolHandles *m_ownedHandles;
   [[no_unique_address]] Allocator m_allocator;
 };
 
 namespace pmr {
-using CommandPool = CommandPool<std::pmr::polymorphic_allocator<cmd::CommandPoolHandles>>;
+using CommandPool =
+    CommandPool<std::pmr::polymorphic_allocator<cmd::CommandPoolHandles>>;
 }
 
 } // namespace gpu

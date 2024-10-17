@@ -8,6 +8,8 @@ find_package(Vulkan REQUIRED)
 set(GPU_LIB_NAME ${PROJECT_NAME}-gpu)
 
 add_library(${GPU_LIB_NAME}
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/buffer/Buffer.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/buffer/Buffer.h
   ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/cmd/CommandBuffer.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/cmd/CommandBuffer.h
   ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/cmd/CommandPool.fwd.h
@@ -19,6 +21,14 @@ add_library(${GPU_LIB_NAME}
   ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/memory/MonotonicResource.h
   ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/memory/PolymorphicAllocator.h
   ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/memory/Ptr.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/sync/Fence.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/sync/Fence.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/sync/Semaphore.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/sync/Semaphore.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/time/Timer.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/time/Timer.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/Queue.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/Queue.h
   ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/Runtime.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/Runtime.fwd.h
   ${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/Runtime.h

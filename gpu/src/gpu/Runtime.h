@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <vulkan/vulkan.hpp>
+#include "gpu/Queue.h"
 #include "gpu/memory/DeviceMemoryResource.h"
 
 namespace gpu {
@@ -26,15 +27,15 @@ public:
   vk::PhysicalDevice physicalDevice;
   vk::Device device;
 
-  uint32_t graphicsQueueFamilyIndex;
-  vk::Queue graphicsQueue;
+  Queue graphicsQueue;
+  Queue computeQueue;
 
   inline gpu::memory::DeviceMemoryResource* deviceLocalMemory() {
     assert(m_deviceLocalMemory);
     return const_cast<gpu::memory::DeviceMemoryResource*>(&*m_deviceLocalMemory);
   }
   
-  inline const gpu::memory::DeviceMemoryResource* hostVisibleMemory() {
+  inline gpu::memory::DeviceMemoryResource* hostVisibleMemory() {
     assert(m_deviceLocalMemory);
     return &*m_hostVisibleMemory;
   }
