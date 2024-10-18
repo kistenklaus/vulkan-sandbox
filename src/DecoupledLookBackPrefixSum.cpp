@@ -7,6 +7,7 @@
 #include <vulkan/vulkan_enums.hpp>
 
 constexpr size_t WORK_GROUP_SIZE = 512;
+constexpr size_t ROWS = 4;
 
 DecoupledLookBackPrefixSum::DecoupledLookBackPrefixSum(bool validationLayer)
     : m_runtime(gpu::RuntimeCreateInfo{
@@ -14,31 +15,36 @@ DecoupledLookBackPrefixSum::DecoupledLookBackPrefixSum(bool validationLayer)
       }),
       m_commandPool(m_runtime, &m_runtime.computeQueue),
       m_deviceLocalMemory(m_runtime.deviceLocalMemory(),
-                          (WEIGHT_COUNT * sizeof(float) * 2) * 1.5),
+                          (WEIGHT_COUNT * sizeof(unsigned int) * 2) * 1.5),
       m_hostVisibleMemory(m_runtime.hostVisibleMemory(),
-                          WEIGHT_COUNT * sizeof(float) * 2 * 1.5),
+                          WEIGHT_COUNT * sizeof(unsigned int) * 2 * 1.5),
       m_set0Layout(gpu::DescriptorSetLayout::builder()
                        .addBinding(0, vk::DescriptorType::eStorageBuffer,
                                    vk::ShaderStageFlagBits::eCompute)
-                       .addBinding(1, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eCompute)
-                       .addBinding(2, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eCompute)
-                       .addBinding(3, vk::DescriptorType::eStorageBuffer, vk::ShaderStageFlagBits::eCompute)
+                       .addBinding(1, vk::DescriptorType::eStorageBuffer,
+                                   vk::ShaderStageFlagBits::eCompute)
+                       .addBinding(2, vk::DescriptorType::eStorageBuffer,
+                                   vk::ShaderStageFlagBits::eCompute)
+                       .addBinding(3, vk::DescriptorType::eStorageBuffer,
+                                   vk::ShaderStageFlagBits::eCompute)
                        .complete(m_runtime)),
       m_pipelineLayout(m_runtime, {&m_set0Layout}),
-      m_computePipeline(m_runtime, "./shaders/decoupled_look_back_prefix_sum.cs.glsl",
-                        &m_pipelineLayout),
+      m_computePipeline(
+          m_runtime,
+          "./shaders/parallel_decoupled_look_back_prefix_sum.cs.glsl",
+          &m_pipelineLayout),
       m_descriptorPool(gpu::DescriptorPool::builder()
                            .require(1, &m_set0Layout)
                            .complete(m_runtime)),
-      m_set0(m_descriptorPool.alloc(&m_set0Layout)),
-      m_timer(m_runtime, 2),
+      m_set0(m_descriptorPool.alloc(&m_set0Layout)), m_timer(m_runtime, 2),
       m_fence(m_runtime), m_transferFence(m_runtime) {}
 
 DecoupledLookBackPrefixSum::~DecoupledLookBackPrefixSum() {}
 
-std::vector<float> DecoupledLookBackPrefixSum::update() {
-  std::vector<float> weights(WEIGHT_COUNT, 1.0f);
-  size_t workGroupCount = (weights.size() + WORK_GROUP_SIZE - 1) / WORK_GROUP_SIZE; // ceil int div
+std::vector<unsigned int> DecoupledLookBackPrefixSum::update() {
+  std::vector<unsigned int> weights(WEIGHT_COUNT, 1u);
+  size_t workGroupCount =
+      (weights.size() + WORK_GROUP_SIZE - 1) / WORK_GROUP_SIZE; // ceil int div
   m_commandPool.reset();
   m_fence.reset();
   m_deviceLocalMemory.reset();
@@ -47,34 +53,36 @@ std::vector<float> DecoupledLookBackPrefixSum::update() {
   std::pmr::monotonic_buffer_resource cpuBufferResouce{m_heap, sizeof(m_heap)};
 
   gpu::Buffer inputBuffer(m_runtime, weights.size() * sizeof(float),
-                     vk::BufferUsageFlagBits::eStorageBuffer |
-                         vk::BufferUsageFlagBits::eTransferDst |
-                         vk::BufferUsageFlagBits::eTransferSrc,
-                     &m_runtime.computeQueue, &m_deviceLocalMemory);
+                          vk::BufferUsageFlagBits::eStorageBuffer |
+                              vk::BufferUsageFlagBits::eTransferDst |
+                              vk::BufferUsageFlagBits::eTransferSrc,
+                          &m_runtime.computeQueue, &m_deviceLocalMemory);
   gpu::Buffer prefixBuffer(m_runtime, weights.size() * sizeof(float),
-                     vk::BufferUsageFlagBits::eStorageBuffer |
-                         vk::BufferUsageFlagBits::eTransferDst |
-                         vk::BufferUsageFlagBits::eTransferSrc,
-                     &m_runtime.computeQueue, &m_deviceLocalMemory);
+                           vk::BufferUsageFlagBits::eStorageBuffer |
+                               vk::BufferUsageFlagBits::eTransferDst |
+                               vk::BufferUsageFlagBits::eTransferSrc,
+                           &m_runtime.computeQueue, &m_deviceLocalMemory);
 
-  gpu::Buffer partitionDescriptorBuffer(m_runtime, workGroupCount * (sizeof(float) + sizeof(float) + sizeof(int)),
-                     vk::BufferUsageFlagBits::eStorageBuffer |
-                         vk::BufferUsageFlagBits::eTransferDst |
-                         vk::BufferUsageFlagBits::eTransferSrc,
-                     &m_runtime.computeQueue, &m_deviceLocalMemory);
+  gpu::Buffer partitionDescriptorBuffer(
+      m_runtime, workGroupCount * (sizeof(float) + sizeof(float) + sizeof(int)),
+      vk::BufferUsageFlagBits::eStorageBuffer |
+          vk::BufferUsageFlagBits::eTransferDst |
+          vk::BufferUsageFlagBits::eTransferSrc,
+      &m_runtime.computeQueue, &m_deviceLocalMemory);
 
-  gpu::Buffer atomicCounterBuffer(m_runtime, sizeof(unsigned int),
-                     vk::BufferUsageFlagBits::eStorageBuffer |
-                         vk::BufferUsageFlagBits::eTransferDst |
-                         vk::BufferUsageFlagBits::eTransferSrc,
-                     &m_runtime.computeQueue, &m_deviceLocalMemory);
+  gpu::Buffer atomicCounterBuffer(
+      m_runtime, sizeof(unsigned int) + sizeof(unsigned int),
+      vk::BufferUsageFlagBits::eStorageBuffer |
+          vk::BufferUsageFlagBits::eTransferDst |
+          vk::BufferUsageFlagBits::eTransferSrc,
+      &m_runtime.computeQueue, &m_deviceLocalMemory);
 
   { // Staged upload
     gpu::Buffer stagingBuffer(m_runtime, weights.size() * sizeof(float),
                               vk::BufferUsageFlagBits::eTransferSrc,
                               &m_runtime.computeQueue, &m_hostVisibleMemory);
     m_transferFence.reset();
-    stagingBuffer.upload<float>(weights);
+    stagingBuffer.upload<unsigned int>(weights);
     gpu::CommandBuffer cmd = m_commandPool.allocate();
     cmd.begin();
     cmd.copyBuffer(&inputBuffer, &stagingBuffer);
@@ -99,8 +107,12 @@ std::vector<float> DecoupledLookBackPrefixSum::update() {
   cmd.bindDescriptorSet(&m_set0, vk::PipelineBindPoint::eCompute,
                         &m_pipelineLayout);
   cmd.sampleTimestamp(vk::PipelineStageFlagBits::eTopOfPipe, &m_timer);
-  std::cout << "dispatch: " << weights.size() / WORK_GROUP_SIZE << std::endl;
-  cmd.dispatch(weights.size() / WORK_GROUP_SIZE, 1, 1);
+
+  size_t a = weights.size();
+  size_t b = WORK_GROUP_SIZE * ROWS;
+  size_t groupCount = (a + b - 1) / b;
+  std::cout << "dispatch: " << groupCount << std::endl;
+  cmd.dispatch(groupCount);
   cmd.sampleTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, &m_timer);
   cmd.end();
 
@@ -113,7 +125,7 @@ std::vector<float> DecoupledLookBackPrefixSum::update() {
 
   computeComplete.wait();
 
-  std::vector<float> out;
+  std::vector<unsigned int> out;
   { // Staged download
     gpu::Buffer stagingBuffer(m_runtime, weights.size() * sizeof(float),
                               vk::BufferUsageFlagBits::eTransferDst,
@@ -128,7 +140,7 @@ std::vector<float> DecoupledLookBackPrefixSum::update() {
         .signal(&m_transferFence)
         .complete();
     m_transferFence.wait();
-    out = stagingBuffer.download<float>();
+    out = stagingBuffer.download<unsigned int>();
   }
 
   auto results = m_timer.downloadResultDeltas(m_runtime);

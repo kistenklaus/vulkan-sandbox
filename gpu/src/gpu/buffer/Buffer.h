@@ -47,8 +47,8 @@ public:
   }
 
   template<typename T, typename Allocator = std::allocator<T>>
-  std::vector<float> download(size_t offset = 0, const Allocator& alloc = {}) {
-    std::vector<float> downstream((m_size - offset) / sizeof(float));
+  std::vector<T> download(size_t offset = 0, const Allocator& alloc = {}) {
+    std::vector<T> downstream((m_size - offset) / sizeof(T));
     void* mappedData = map(offset);
     std::memcpy(downstream.data(), mappedData, m_size - offset);
     m_device.unmapMemory(m_memory.deviceMemory);

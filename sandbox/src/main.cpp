@@ -12,40 +12,57 @@
 int main() {
 
   using App = DecoupledLookBackPrefixSum;
-  App app = true;
+  App app = false;
   auto weightCount = App::WEIGHT_COUNT;
-  for (size_t i = 0; i < 100000; i++) {
-    auto prefix = app.update();
-    float transferPerWeight = 2 * sizeof(float); // 8 byte
-    float minTransfers = weightCount * transferPerWeight;
+  auto prefix = app.update();
+  float transferPerWeight = 2 * sizeof(float); // 8 byte
+  float minTransfers = weightCount * transferPerWeight;
 
-    if constexpr (false) {
-      for (auto [i, v] : prefix | std::views::enumerate) {
-        std::cout << "[" << i << "] = " << v << std::endl;
-        if (v == 0) {
-          std::cout << "..." << std::endl;
-          break;
+  if (weightCount <= 512 * 64) {
+    float prev = 0.0f;
+    bool dotted = false;
+    for (auto [i, v] : prefix | std::views::enumerate) {
+      if constexpr (true) {
+        if (v == prev) {
+          if (!dotted) {
+            dotted = true;
+            std::cout << "...\n";
+          }
+        } else {
+          dotted = false;
+          prev = v;
+          std::cout << "[" << i << "] = " << v << '\n';
         }
+      } else {
+        std::cout << "[" << i << "] = " << v << '\n';
       }
     }
-    std::cout << "last: " << prefix.back() << std::endl;
-    /* assert(prefix.back() == weightCount); */
-
-    /* float max = std::ranges::max(prefix); */
-    /* std::cout << "max = " << max << std::endl; */
-    auto dur = std::chrono::duration_cast<std::chrono::duration<double>>(
-        app.duration());
-    std::cout << "time: "
-              << std::chrono::duration_cast<
-                     std::chrono::duration<double, std::milli>>(dur)
-              << std::endl;
-    float seconds = dur.count();
-    float speed = minTransfers / (seconds * 1e9);
-    std::cout << "Elements Per Second: " << seconds / weightCount << std::endl;
-    std::cout << "Speed:" << speed << "Gb/s (target=500Gb/s) efficiency=("
-              << (speed / 504) * 100 << "%)" << std::endl;
-    break;
   }
+  std::cout << "last: " << prefix.back() << std::endl;
+
+  if (weightCount <= 64e5) {
+    float max = std::ranges::max(prefix);
+    std::cout << "max: " << max << std::endl;
+  }
+
+  auto dur =
+      std::chrono::duration_cast<std::chrono::duration<double, std::ratio<1>>>(
+          app.duration());
+
+  std::cout
+      << "time: "
+      << std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(
+             dur)
+      << " (target=2ms)" << std::endl;
+  float seconds = dur.count();
+  std::cout << seconds << std::endl;
+  float speed = minTransfers / (seconds * 1e9);
+  std::cout << "InputSize: " << weightCount << std::endl;
+  std::cout << "Elements Per Second: " << weightCount / seconds << std::endl;
+  std::cout << "Speed:" << speed << "Gb/s (target=500Gb/s) efficiency=("
+            << (speed / 504) * 100 << "%)" << std::endl;
+
+  assert(prefix.back() == weightCount);
 
   return 1;
 }

@@ -88,7 +88,7 @@ std::vector<float> SubgroupPrefixSum::update() {
   cmd.sampleTimestamp(vk::PipelineStageFlagBits::eTopOfPipe, &m_timer);
   /* cmd.dispatch(weights.size() / (WORK_GROUP_SIZE * 9), 1, 1); */
   size_t items = weights.size();
-  size_t itemsPerGroup = WORK_GROUP_SIZE * 16;
+  size_t itemsPerGroup = WORK_GROUP_SIZE;
   size_t groupCount = (items + itemsPerGroup - 1) / itemsPerGroup;
   cmd.dispatch(groupCount);
   cmd.sampleTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, &m_timer);

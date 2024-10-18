@@ -181,9 +181,22 @@ Runtime::Runtime(const RuntimeCreateInfo &createInfo) {
   features2.setPNext(&v12Features);
   v12Features.setVulkanMemoryModelDeviceScope(VK_TRUE);
   v12Features.setVulkanMemoryModel(VK_TRUE);
+  /* vk::PhysicalDeviceShaderAtomicFloat2FeaturesEXT atomicFloats; */
+  /* atomicFloats.shaderBufferFloat16Atomics = true; */
+  /* atomicFloats.shaderBufferFloat16AtomicAdd = true; */
+  /* atomicFloats.shaderBufferFloat16AtomicMinMax = true; */
+  /* atomicFloats.shaderBufferFloat32AtomicMinMax = true; */
+  /* atomicFloats.shaderBufferFloat64AtomicMinMax = true; */
+  /* atomicFloats.shaderSharedFloat16Atomics = true; */
+  /* atomicFloats.shaderSharedFloat16AtomicAdd = true; */
+  /* atomicFloats.shaderSharedFloat16AtomicMinMax = true; */
+  /* atomicFloats.shaderSharedFloat32AtomicMinMax = true; */
+  /* atomicFloats.shaderSharedFloat64AtomicMinMax = true; */
+  /* atomicFloats.shaderImageFloat32AtomicMinMax = true; */
+  /* atomicFloats.sparseImageFloat32AtomicMinMax = true; */
+  /* v12Features.setPNext(&atomicFloats); */
 
   deviceCreateInfo.setPNext(&features2);
-
 
   vk::Result rCreateDevice =
       physicalDevice.createDevice(&deviceCreateInfo, nullptr, &device);

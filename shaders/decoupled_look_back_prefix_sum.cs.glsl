@@ -57,13 +57,12 @@ void main() {
     uint partID = groupID;
     uint itemID = partID * GROUP_SIZE + invocID;
 
-
     // 1. Step calculate group aggregate
     // - 1.1 Calculate subgroup aggregates
     float item = values[itemID];
     //groupCache[invocID] = values[itemID];
 
-    subgroupAggregates[subgroupID] = 32;
+    subgroupAggregates[subgroupID] = subgroupAdd(item);
     barrier();
 
     // - 1.2 Combine subgroup aggregates.
@@ -80,7 +79,7 @@ void main() {
         partitions[partID].aggregate = aggregate;
         if (partID == 0) {
             partitions[0].prefix = aggregate;
-        } 
+        }
     }
     //memoryBarrierBuffer();
     if (invocID == GROUP_SIZE - 1) {
@@ -98,6 +97,7 @@ void main() {
             barrier();
             //memoryBarrierBuffer();
             uint state = lookBackState;
+            barrier();
             if (state == STATE_P) {
                 if (invocID == GROUP_SIZE - 1) {
                     float prefix = partitions[lookBackIndex].prefix;
@@ -112,6 +112,7 @@ void main() {
                 lookBackIndex--;
                 continue;
             }
+            // barrier();
             // else spin!
         }
 
@@ -126,6 +127,8 @@ void main() {
             atomicStore(partitions[partID].state, STATE_P, gl_ScopeDevice, RELEASE);
         }
     }
+    barrier();
+    memoryBarrierShared();
 
     float inclusivePrefix = subgroupInclusiveAdd(item);
     if (subgroupID == gl_NumSubgroups.x - 1) {
@@ -136,6 +139,7 @@ void main() {
             subgroupAggregates[subInvocID] = exclusiveSubgroupPrefix;
         }
     }
+    barrier();
     item = subgroupAggregates[subgroupID] + inclusivePrefix + groupPrefix;
 
     // write back
